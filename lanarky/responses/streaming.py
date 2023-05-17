@@ -4,13 +4,15 @@ Credits:
 - https://github.com/hwchase17/langchain/discussions/1706
 """
 from typing import Any, Awaitable, Callable, Dict, Optional, Union
+import json
 
 from fastapi.responses import StreamingResponse as _StreamingResponse
 from langchain.chains.base import Chain
 from starlette.background import BackgroundTask
 from starlette.types import Send
 
-from lanarky.callbacks import get_streaming_callback
+
+from fastapi_async_langchain.callbacks import get_streaming_callback
 
 
 class StreamingResponse(_StreamingResponse):
@@ -19,12 +21,14 @@ class StreamingResponse(_StreamingResponse):
     def __init__(
         self,
         chain_executor: Callable[[Send], Awaitable[Any]],
+        initial_data: Optional[Dict[str, Any]] = None,
         background: Optional[BackgroundTask] = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(content=iter(()), background=background, **kwargs)
 
         self.chain_executor = chain_executor
+        self.initial_data = initial_data
 
     async def stream_response(self, send: Send) -> None:
         await send(
@@ -39,6 +43,13 @@ class StreamingResponse(_StreamingResponse):
             if not isinstance(token, bytes):
                 token = token.encode(self.charset)
             await send({"type": "http.response.body", "body": token, "more_body": True})
+
+        async def send_initial_data(data: Dict[str, Any]):
+            data_str = json.dumps(data)
+            await send_token(data_str)
+
+        if self.initial_data is not None:
+            await send_initial_data(self.initial_data)
 
         try:
             outputs = await self.chain_executor(send_token)
@@ -64,7 +75,8 @@ class StreamingResponse(_StreamingResponse):
     ) -> Callable[[Send], Awaitable[Any]]:
         async def wrapper(send: Send):
             return await chain.acall(
-                inputs=inputs, callbacks=[get_streaming_callback(chain, send=send)]
+                inputs=inputs, callbacks=[
+                    get_streaming_callback(chain, send=send)]
             )
 
         return wrapper
@@ -74,6 +86,7 @@ class StreamingResponse(_StreamingResponse):
         cls,
         chain: Chain,
         inputs: Union[Dict[str, Any], Any],
+        initial_data: Optional[Dict[str, Any]] = None,
         background: Optional[BackgroundTask] = None,
         **kwargs: Any,
     ) -> "StreamingResponse":
@@ -82,5 +95,6 @@ class StreamingResponse(_StreamingResponse):
         return cls(
             chain_executor=chain_executor,
             background=background,
+            initial_data=initial_data,
             **kwargs,
         )
